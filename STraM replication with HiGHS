@@ -1,0 +1,1077 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{textcomp}
+\usepackage{float}
+\usepackage[htt]{hyphenat}
+\usepackage[hidelinks]{hyperref}
+\sloppy\emergencystretch=4em
+
+\setlist{itemsep=2pt, topsep=4pt}
+\newcolumntype{L}[1]{>{\raggedright\arraybackslash}p{#1}}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{gray!10},
+  frame=single,
+  rulecolor=\color{gray!40},
+  breaklines=true,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true
+}
+
+\title{Running STraM with the Open-Source Solver HiGHS\\[4pt]
+\large Purpose, installation, problems solved, results, and feasibility for
+surrogate-based research}
+\author{Abiodun Adebowale Ilugbusi}
+\date{13 November 2026 }
+
+\begin{document}
+\maketitle
+
+\section{Summary}
+
+STraM (Strategic Transport Model, Bakker et al., 2025) is the starting point
+of the research plan \emph{Surrogate-Embedded Stochastic Optimisation for
+Resilient Multimodal Transport Networks}. Its published code calls the
+commercial solver Gurobi. This report records how STraM was installed and run
+on a Windows workstation with the open-source solver HiGHS, every problem met
+on the way, the results of four runs, and what they mean for the planned
+research.
+
+\begin{itemize}
+  \item \textbf{STraM runs fully without Gurobi.} All model types in the
+        paper's base case were solved with HiGHS: the deterministic model,
+        the expected-value (EV) model, the nine-scenario model with the first
+        stage fixed (EEV), and the full nine-scenario stochastic programme
+        (SP, 4.48 million constraints, 306 binary variables).
+  \item \textbf{The stochastic programme does not reproduce the published
+        objective.} HiGHS gives 2883.51 (\texteuro 288.35 billion). The
+        paper and the authors' Gurobi log give 2444.53
+        (\texteuro 244.5 billion), 18\% lower.
+  \item \textbf{The reason was measured, not inferred.} The authors' saved
+        Gurobi solution of the stochastic programme serves only 88--92\% of
+        the transport demand. It was solved with a feasibility tolerance of
+        $10^{-2}$ in a model whose demands are in million tonnes, and Gurobi's
+        own log warns that the solution violates constraints. The HiGHS
+        solutions serve 100\% (Section~\ref{sec:evidence}).
+  \item \textbf{Consequence for the paper's headline comparison.} The paper
+        reports a value of the stochastic solution of \texteuro 39.1 billion
+        (13.8\%). With both models solved to strict feasibility it is between
+        \texteuro 0.001 and \texteuro 0.41 billion (at most 0.14\%). This
+        should be put to the authors before it is relied on
+        (Section~\ref{sec:vss}).
+  \item \textbf{A second, minor code issue.} The EV stage in
+        \texttt{Main.py} passes one argument in the wrong position, which
+        drops 344 constraints. Correcting it changes the EEV objective by
+        0.14\% (Section~\ref{sec:evarg}).
+  \item \textbf{Feasibility for surrogate work.} Confirmed at the level of
+        the foundation: STraM can be installed, changed, run at full size and
+        used to evaluate fixed first-stage decisions across scenarios on open
+        tools. The surrogate method itself is untested
+        (Section~\ref{sec:surrogate}).
+\end{itemize}
+
+\newpage
+
+\section{Proposed research idea}
+
+\subsection{Context}
+
+The research plan builds on STraM in two work packages:
+
+\begin{itemize}
+  \item \textbf{WP1} keeps STraM's two-stage structure and mean--CVaR
+        objective but makes disruptions the uncertainty and a response model
+        the recourse. It uses the value of the stochastic solution as its
+        benchmark, as STraM does.
+  \item \textbf{WP2} replaces the recourse model by machine-learning
+        surrogates, either embedded as constraints or used to generate
+        candidate cuts.
+\end{itemize}
+
+
+Both depend on being able to run, inspect and change STraM. The published
+code needs Gurobi, and Gurobi's free academic licence needs a university
+affiliation, which is not available at this stage.
+
+\subsection{Questions the work set out to answer}
+
+\begin{enumerate}
+  \item Can STraM be run with a free solver, and how much code must change?
+  \item Does the free solver reproduce the published results?
+  \item Does it scale to the nine-scenario model used in the paper?
+  \item Is STraM therefore a workable base for the surrogate research?
+\end{enumerate}
+
+\subsection{Why each run was chosen?}
+
+\begin{table}[H]
+\centering
+\begin{tabularx}{\textwidth}{@{}lL{3.9cm}Y@{}}
+\toprule
+Run & Model & Reason \\
+\midrule
+1 & Deterministic case (\texttt{FuelDetScen}) &
+The smallest complete model. Tests the installation and the solver swap in
+under a minute. \\
+2 & EV and EEV, code as published &
+A like-for-like comparison with current Gurobi logs, and the first test at
+full size. \\
+3 & EV and EEV, argument corrected &
+Measures the effect of the misplaced argument found in the code. \\
+4 & Full stochastic programme (SP) &
+The paper's main model. Tests scale with free binary variables and gives the
+value of the stochastic solution. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\section{Environment}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Item & Value \\
+\midrule
+Operating system & Windows, Git Bash (MINGW64) terminal \\
+Project folder & \texttt{C:\textbackslash STraM\textbackslash STraM} \\
+System default Python & 3.14.0 \\
+Python used for STraM & 3.10.11, in a virtual environment \texttt{env} \\
+NumPy & 2.2.6 \\
+highspy / HiGHS & 1.16.0 \\
+Processor threads used by HiGHS & 20 \\
+STraM version & GitHub \texttt{main}, last commit 4 December 2024 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\newpage
+
+Three sources of numbers appear in this report and are kept apart:
+
+\begin{itemize}
+  \item \textbf{Workstation runs}: Runs 1--4, made on the machine above.
+  \item \textbf{Diagnostic runs}: made separately on a Linux machine with
+        2 cores, Python 3.13, Pyomo 6.10.1, NumPy 2.5.3, pandas 3.0.5 and
+        HiGHS 1.16.0, with the same code changes
+        (Sections~\ref{sec:evidence} and~\ref{sec:evarg}).
+  \item \textbf{Authors' files}: the Gurobi logs and saved result files that
+        ship in the repository under \texttt{Data/Output/}.
+\end{itemize}
+
+\section{Record of the session}
+
+\begin{longtable}{@{}r L{5.2cm} L{8.6cm}@{}}
+\toprule
+Step & What was done & Outcome \\
+\midrule
+\endhead
+1 & Read the paper and inspected the repository. &
+Found that the solver is called in one function, that a one-scenario case
+exists, and that Gurobi logs ship with the code. \\
+\addlinespace
+2 & Wrote a process plan and a two-day mini project, then typeset it in
+\LaTeX. &
+\texttt{stram\_plan.tex} and PDF. \\
+\addlinespace
+3 & Installed Python 3.10. &
+The 3.10.22 page has no installer, so 3.10.11 was used. \\
+\addlinespace
+4 & Listed the installed Python versions and chose 3.10 for the project. &
+\texttt{py -0p} lists them; \texttt{py -3.10 -m venv env} fixes the choice
+without changing the system default (3.14.0). \\
+\addlinespace
+5 & First package install. &
+Failed with a \texttt{distutils} error because the install ran under the
+newer Python. \\
+\addlinespace
+6 & Recreated and activated the environment. &
+The Command Prompt activate command failed in Git Bash;
+\texttt{source env/Scripts/activate} worked. \\
+\addlinespace
+7 & First edit of \texttt{solve\_model()}: only the solver name was changed. &
+Not sufficient, because the Gurobi option names were still passed. \\
+\addlinespace
+8 & Replaced \texttt{solve\_model()} with a HiGHS version. &
+Tested beforehand on a small mixed-integer model, including an infeasible
+case. \\
+\addlinespace
+9 & Set \texttt{Main.py} for the deterministic case and ran it. &
+Stopped on \texttt{np.infty} (NumPy 2). Fixed in
+\texttt{Data/interpolate.py}. \\
+\addlinespace
+10 & Ran again. &
+Stopped on ``solver not available''. \texttt{highspy} could not be imported
+because \texttt{typing\_extensions} was missing. Installed it. \\
+\addlinespace
+11 & Run 1 (deterministic). &
+Completed. Objective 2879.71. The expected value of 2300.12 turned out to
+come from a stale log. \\
+\addlinespace
+12 & Wrote version 1 of this report. & PDF and \LaTeX. \\
+\addlinespace
+13 & Run 2 (EV and EEV, code as published). &
+Completed in about 14 minutes. Objectives 2843.61 and 2887.63, against
+2808.05 and 2836.22 with Gurobi. \\
+\addlinespace
+14 & Investigated the difference on a second machine. &
+Reproduced the HiGHS EV result exactly, checked the repository history, and
+tested tolerance sensitivity. \\
+\addlinespace
+15 & Tested the misplaced argument in the EV stage. &
+Confirmed that it removes 344 constraints. \\
+\addlinespace
+16 & Wrote version 2 of this report; then checked the units of the cost
+tables in the code. &
+Billion euro, annual and undiscounted. \\
+\addlinespace
+17 & Checked the paper and code for a time limit. &
+None is used. The paper reports about 6 minutes for nine scenarios. \\
+\addlinespace
+18 & Run 3 (EV and EEV, argument corrected at line 200 of
+\texttt{Main.py}). &
+EV 2879.71 as predicted; EEV 2883.52. \\
+\addlinespace
+19 & Run 4 (full stochastic programme), with a two-hour time limit added. &
+Solved to optimality in about 10 minutes of solver time. Objective 2883.51,
+against 2444.53 with Gurobi. \\
+\addlinespace
+20 & Examined the authors' saved Gurobi solutions. &
+The stochastic-programme solution serves 88--92\% of demand; the EEV
+solution about 99\%. \\
+\addlinespace
+21 & Computed an independent lower bound from nine single-scenario solves. &
+2864.87. The Gurobi objective is 14.7\% below it. \\
+\bottomrule
+\end{longtable}
+
+Guidance and expectations that proved wrong during the session:
+
+\begin{itemize}
+  \item The plan said to remove the \texttt{warmstart},
+        \texttt{symbolic\_solver\_labels} and \texttt{keepfiles} arguments by
+        hand. Testing showed HiGHS accepts them; the real problems were the
+        Gurobi option names and \texttt{results.solver.time}.
+  \item The reference value 2300.12 was taken from a log that predates the
+        current data. It should not have been used.
+  \item The emission cap setting was first left on. It was switched off so
+        that runs correspond to the reference logs.
+  \item Before Run 4 the stochastic objective was expected to be 1--2\%
+        above the Gurobi value, by extrapolation from Run 2. It was 18\%
+        above. The extrapolation did not allow for how far the Gurobi
+        solution of the larger model departs from feasibility.
+\end{itemize}
+
+\section{Updated installation procedure}
+\label{sec:install}
+
+This replaces the steps in the STraM README for a Windows machine using Git
+Bash and no Gurobi licence.
+
+\begin{enumerate}
+  \item \textbf{Install Python 3.10.11.} Download the ``Windows installer
+        (64-bit)'' from
+        \url{https://www.python.org/downloads/release/python-31011/} and tick
+        ``Add python.exe to PATH''. Later 3.10 releases are source-only.
+  \item \textbf{Confirm it is visible.}
+\begin{lstlisting}[language=bash]
+py -0p
+\end{lstlisting}
+  \item \textbf{Clone the repository} (about 640 MB).
+\begin{lstlisting}[language=bash]
+git clone https://github.com/ntnuiotenergy/STraM
+cd STraM
+\end{lstlisting}
+  \item \textbf{Create and activate the environment with 3.10.}
+\begin{lstlisting}[language=bash]
+py -3.10 -m venv env
+source env/Scripts/activate
+python --version        # must print Python 3.10.11
+\end{lstlisting}
+  \item \textbf{Install the packages.}
+\begin{lstlisting}[language=bash]
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m pip install highspy typing_extensions
+python -c "import highspy; print('highspy OK')"
+\end{lstlisting}
+  \item \textbf{Apply the code changes} in Section~\ref{sec:changes}.
+  \item \textbf{Keep copies of the reference logs and result files}, because
+        runs overwrite them.
+\begin{lstlisting}[language=bash]
+mkdir Data/Output/reference
+cp Data/Output/*_logfile.log Data/Output/*_results.pickle Data/Output/reference/
+\end{lstlisting}
+  \item \textbf{Run.}
+\begin{lstlisting}[language=bash]
+python Main.py
+\end{lstlisting}
+\end{enumerate}
+
+The activation command depends on the terminal:
+\texttt{source env/Scripts/activate} in Git Bash,
+\texttt{env\textbackslash Scripts\textbackslash activate} in Command Prompt,
+and \texttt{.\textbackslash env\textbackslash Scripts\textbackslash
+Activate.ps1} in PowerShell. Overwritten files can also be restored with
+\texttt{git checkout -{}- Data/Output/}.
+
+\section{Code changes}
+\label{sec:changes}
+
+\subsection{\texttt{Model.py}: solver call}
+
+The function \texttt{solve\_model()} at the end of the file was replaced. It
+is the only place where the solver is called.
+
+\begin{lstlisting}[language=Python]
+    def solve_model(self, warmstart=False,
+                    FeasTol=(10**(-2)),
+                    MIP_gap=MIPGAP,
+                    TimeLimit=None,   # seconds. None = no limit
+                    num_focus=0,      # Gurobi-only (ignored)
+                    Crossover=-1,     # Gurobi-only (ignored)
+                    Method=-1,        # Gurobi-only (ignored)
+                    NodeMethod=-1):   # Gurobi-only (ignored)
+
+        import time as _time
+
+        opt = pyomo.opt.SolverFactory('appsi_highs')
+        if not opt.available():
+            raise Exception("HiGHS is not available. Run: pip install highspy")
+
+        opt.options['mip_rel_gap'] = MIP_gap
+        opt.options['primal_feasibility_tolerance'] = FeasTol
+        if TimeLimit is not None:
+            opt.options['time_limit'] = float(TimeLimit)
+
+        start = _time.time()
+        try:
+            results = opt.solve(self.model, tee=True)
+        except RuntimeError as err:
+            log_infeasible_constraints(self.model)
+            raise Exception('HiGHS did not return a feasible solution: '
+                            + str(err))
+        solve_time = _time.time() - start
+
+        solver_stat = results.solver.status
+        termination_cond = results.solver.termination_condition
+        if (solver_stat == pyomo.opt.SolverStatus.ok) and (
+                termination_cond == pyomo.opt.TerminationCondition.optimal):
+            print('the solution is feasible and optimal')
+        else:
+            log_infeasible_constraints(self.model)
+            log_infeasible_constraints(self.model, log_expression=True,
+                                       log_variables=True)
+            logging.basicConfig(filename='example.log', encoding='utf-8',
+                                level=logging.INFO)
+            raise Exception('Solver Status: ', solver_stat,
+                            'Termination Condition: ', termination_cond)
+
+        print('Solution time: ' + str(solve_time))
+\end{lstlisting}
+
+\begin{table}[H]
+\centering
+\caption{What changed in \texttt{solve\_model()}.}
+\begin{tabularx}{\textwidth}{@{}L{5cm}Y@{}}
+\toprule
+Original (Gurobi) & Replacement (HiGHS) \\
+\midrule
+\texttt{SolverFactory('gurobi')} & \texttt{SolverFactory('appsi\_highs')} \\
+\texttt{MIPGap} & \texttt{mip\_rel\_gap} \\
+\texttt{FeasibilityTol} & \texttt{primal\_feasibility\_tolerance} \\
+\texttt{NumericFocus}, \texttt{BarConvTol}, \texttt{Crossover},
+\texttt{Method}, \texttt{NodeMethod} &
+Dropped. The function arguments are kept and ignored, so the calls in
+\texttt{Main.py} work unchanged. \\
+\texttt{results.solver.time} &
+Does not exist with HiGHS; the function times the solve itself. \\
+No time limit & Optional \texttt{TimeLimit} argument in seconds. \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{\texttt{Data/interpolate.py}: NumPy 2 compatibility}
+
+The name \texttt{np.infty} was removed in NumPy 2.0. It appears 12 times in
+this file and nowhere else in the repository. All were replaced with
+\texttt{np.inf}:
+
+\begin{lstlisting}[language=bash]
+sed -i 's/np\.infty/np.inf/g' Data/interpolate.py
+\end{lstlisting}
+
+\subsection{\texttt{Main.py}: run settings and two edits}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{@{}lllll@{}}
+\toprule
+Setting & Original & Run 1 & Runs 2--3 & Run 4 \\
+\midrule
+\texttt{analysis} & \texttt{"risk"} & \texttt{"standard"} &
+\texttt{"standard"} & \texttt{"standard"} \\
+\texttt{scenario\_tree} & \texttt{"FuelScen"} & \texttt{"FuelDetScen"} &
+\texttt{"FuelScen"} & \texttt{"FuelScen"} \\
+\texttt{analysis\_type} & \texttt{"SP"} & \texttt{"SP"} & \texttt{"EEV"} &
+\texttt{"SP"} \\
+\texttt{emission\_cap\_constraint} & \texttt{True} & \texttt{False} &
+\texttt{False} & \texttt{False} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Two further edits were made after Run 2:
+
+\begin{itemize}
+  \item \textbf{Line 200} (from Run 3): the EV call passes the emission-cap
+        flag by name (Section~\ref{sec:evarg}).
+\begin{lstlisting}[language=Python]
+                                risk_info, emission_cap_constraint=emission_cap_constraint,
+\end{lstlisting}
+  \item \textbf{Line 145} (Run 4): a two-hour time limit as a safeguard. It
+        was not reached.
+\begin{lstlisting}[language=Python]
+    model_instance.solve_model(FeasTol=FeasTol, TimeLimit=7200,
+\end{lstlisting}
+\end{itemize}
+
+\section{Problems encountered and how they were solved}
+
+\begin{longtable}{@{}r L{3.6cm} L{4.6cm} L{5.2cm}@{}}
+\toprule
+No. & Problem & Cause & Solution \\
+\midrule
+\endhead
+1 & The python.org page for 3.10.22 has no installer. &
+3.10 is end-of-life; releases after 3.10.11 are source-only. &
+Installed 3.10.11 from its own release page. \\
+\addlinespace
+2 & \texttt{python -{}-version} showed 3.14.0. &
+3.14 is the system default. &
+Left the default alone and created the environment with
+\texttt{py -3.10 -m venv env}. \\
+\addlinespace
+3 & \texttt{pip install -r requirements.txt} failed building \texttt{numpy}
+and \texttt{Basemap}: ``No module named 'distutils'\,''. &
+The install ran under the newer Python, where \texttt{distutils} no longer
+exists and packages had to be built from source. &
+Recreated the environment with 3.10 and installed again. \\
+\addlinespace
+4 & The Command Prompt style activate command gave ``command not found''. &
+Git Bash treats backslashes as escape characters. &
+Used \texttt{source env/Scripts/activate}. \\
+\addlinespace
+5 & After changing only the solver name, the Gurobi option names were still
+passed to HiGHS. &
+HiGHS uses different option names and rejects unknown ones. &
+Replaced the whole \texttt{solve\_model()} function
+(Section~\ref{sec:changes}). \\
+\addlinespace
+6 & \texttt{AttributeError: np.infty was removed in the NumPy 2.0 release}. &
+STraM was written for NumPy 1.x; pip installed 2.2.6. &
+Replaced \texttt{np.infty} with \texttt{np.inf} in
+\texttt{Data/interpolate.py}. \\
+\addlinespace
+7 & \texttt{ApplicationError: Solver \ldots{} is not available (NotFound)}. &
+\texttt{highspy} was installed but could not be imported: it needs
+\texttt{typing\_extensions} on Python 3.10, which pip had not installed. &
+\texttt{python -m pip install typing\_extensions}. \\
+\addlinespace
+8 & Repeated ``Error writing to output stream \ldots{} WinError 1'' during
+every solve. &
+Pyomo could not stream the live HiGHS log through STraM's logger under Git
+Bash. &
+Harmless: the same text is printed afterwards and the solve is unaffected.
+Running from Command Prompt should avoid it (not yet tried). \\
+\addlinespace
+9 & Run 1 objective (2879.71) did not match the expected 2300.12. &
+The log \texttt{FuelDetScen\_carbontaxbase\_SP\_logfile.log} is stale: last
+committed 9 January 2024, made with Gurobi 9, first-period objective 511.18
+against 537.11 in all current logs. &
+Discarded that reference and compared against the current logs instead. \\
+\addlinespace
+10 & Run 2 objectives were 1.3\% and 1.8\% above the Gurobi values. &
+The Gurobi solutions are not fully feasible. The saved EEV solution serves
+about 99\% of demand. &
+Investigated and documented (Section~\ref{sec:evidence}). \\
+\addlinespace
+11 & Run 4 objective was 18\% above the Gurobi value. &
+The saved Gurobi solution of the stochastic programme serves only 88--92\%
+of demand, permitted by its feasibility tolerance of $10^{-2}$. &
+Measured directly from the authors' result file and confirmed with an
+independent lower bound (Section~\ref{sec:evidence}). The HiGHS value is kept
+as the valid one. \\
+\bottomrule
+\end{longtable}
+
+\section{Runs and results}
+
+\subsection{Solver performance on the workstation}
+
+\begin{table}[H]
+\centering
+\caption{Small models.}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & First period & Deterministic (Run 1) & EV as published (Run 2) \\
+\midrule
+Type & LP & MIP & MIP \\
+Rows & 3{,}150 & 16{,}107 & 15{,}763 \\
+Columns & 27{,}773 & 139{,}184 & 138{,}925 \\
+Nonzeros & 243{,}522 & 1{,}219{,}240 & 1{,}218{,}230 \\
+Binary variables & 0 & 34 & 34 \\
+Objective & 537.1122 & 2879.7135 & 2843.6064 \\
+Best bound & -- & 2879.4719 & 2843.3619 \\
+Gap & -- & 0.008\% & 0.009\% \\
+HiGHS run time & 0.22 s & 22.62 s & 15.96 s \\
+Wall time with Pyomo & 0.85 s & 26.35 s & 19.84 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The EV model with the argument corrected (Run 3) is identical in size to the
+deterministic model and gave 2879.7133 in 22.71 seconds.
+
+\begin{table}[H]
+\centering
+\caption{Nine-scenario models.}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+ & EEV (Run 2) & EEV corrected (Run 3) & SP (Run 4) \\
+\midrule
+Rows & 4{,}476{,}547 & 4{,}476{,}547 & 4{,}476{,}547 \\
+Columns & 1{,}834{,}336 & 1{,}834{,}336 & 1{,}834{,}336 \\
+Nonzeros & 19{,}617{,}751 & 19{,}617{,}751 & 19{,}636{,}336 \\
+Free binary variables & 0 (all fixed) & 0 (all fixed) & 306 \\
+Rows after presolve & 78{,}025 & 78{,}030 & 78{,}384 \\
+Columns after presolve & 706{,}081 & 706{,}181 & 709{,}971 \\
+LP iterations & 101{,}705 & 101{,}684 & 111{,}136 \\
+Branch-and-bound nodes & 1 & 1 & 1 \\
+Objective & 2887.6261 & 2883.5152 & 2883.5083 \\
+Best bound & 2887.6261 & 2883.5152 & 2883.2683 \\
+Gap & 0\% & 0\% & 0.008\% \\
+In billion euro & 288.76 & 288.35 & 288.35 \\
+Model construction time & 73.6 s & 73.7 s & 75.7 s \\
+HiGHS run time & 477.9 s & 510.9 s & 606.6 s \\
+Wall time with Pyomo & 717.3 s & 747.3 s & 835.9 s \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+In Run 4 the first-period model was built for all nine scenarios
+(2{,}191{,}366 rows, 540{,}793 columns) and again gave 537.1122. The
+stochastic programme was solved at the root node. Peak memory was not
+recorded.
+
+\subsection{Comparison with the Gurobi logs}
+
+\begin{table}[H]
+\centering
+\caption{HiGHS on the workstation against the authors' Gurobi 11 logs, code
+as published.}
+\begin{tabularx}{\textwidth}{@{}L{3.6cm}rrrY@{}}
+\toprule
+Quantity & HiGHS & Gurobi & Difference & Gurobi tolerance \\
+\midrule
+First-period objective & 537.1122 & 537.1120 & $<$0.0001\% & $10^{-4}$ \\
+EV objective & 2843.61 & 2808.05 & $+1.27$\% & $10^{-3}$ \\
+EEV objective & 2887.63 & 2836.22 & $+1.81$\% & $10^{-2}$ \\
+SP objective & 2883.51 & 2444.53 & $+17.96$\% & $10^{-2}$ \\
+\midrule
+EV solve time & 16 s & 6 s & & \\
+EEV solve time & 478 s & 858 s & & \\
+SP solve time & 607 s & 159 s & & \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The difference grows as the Gurobi tolerance is loosened. The Gurobi runs
+were made on other machines (an i7-10700 with 16 threads for EV and EEV, an
+i7-10510U with 8 threads for SP), so the times are indicative only. The paper
+reports \texteuro 244.5 billion for SP and \texteuro 283.6 billion for EEV,
+which are the Gurobi values above.
+
+\subsection{Why the objectives differ: direct evidence}
+\label{sec:evidence}
+
+\subsubsection*{The models are the same}
+
+\begin{itemize}
+  \item Column counts are identical in every case (138{,}925 for EV;
+        1{,}834{,}336 for SP), and the coefficient ranges printed by the two
+        solvers agree. Row counts differ only because Pyomo writes each
+        two-sided constraint as two rows in the file format used for Gurobi.
+  \item The model code has not changed since the reference runs. The
+        scenario file was changed on 14 November 2024 and reverted on
+        3 December; the change only added rows for an extra scenario and left
+        the nine scenarios' data untouched.
+  \item The HiGHS EV result was reproduced on the second machine to all
+        printed digits (2843.60638215).
+\end{itemize}
+
+\subsubsection*{Gurobi's own warnings}
+
+The Gurobi logs end with:
+
+\begin{itemize}
+  \item EV: ``max constraint violation (7.99e-03) exceeds tolerance'' and
+        ``max bound violation (7.57e-03) exceeds tolerance''.
+  \item SP: ``max constraint violation (8.69e-02) exceeds tolerance'' and
+        ``max bound violation (7.97e-02) exceeds tolerance''.
+\end{itemize}
+
+\subsubsection*{What the saved Gurobi solutions contain}
+
+The repository ships the authors' result files. The stochastic-programme
+file stores an objective of 2444.5269657417616, exactly the value in the log,
+so it is the solution behind the published figure. STraM saves every path
+flow greater than zero, so total flow can be compared with total demand.
+
+\begin{table}[H]
+\centering
+\caption{Share of transport demand served (scenario BB; other scenarios
+agree to within 0.1 percentage points). Demand in million tonnes.}
+\label{tab:served}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Year & Demand & Gurobi SP & Gurobi EEV & HiGHS \\
+\midrule
+2023 & 156.8 & 88.4\% & 98.9\% & 100.0\% \\
+2028 & 177.4 & 89.9\% & 99.2\% & 100.0\% \\
+2034 & 191.2 & 91.4\% & 99.3\% & 100.0\% \\
+2040 & 198.7 & 91.6\% & 99.2\% & 100.0\% \\
+2050 & 219.7 & 92.3\% & 99.3\% & 100.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The HiGHS column is from a diagnostic solve of the deterministic model; it
+also has no negative flows. Further observations on the saved Gurobi
+stochastic solution:
+
+\begin{itemize}
+  \item It uses 362 paths in 2023; the saved EEV solution uses 973.
+  \item It contains 1{,}786 negative arc flows and 1{,}561 negative
+        empty-trip flows, down to $-0.042$.
+  \item Its cost for the 2023 period is 442.9. The first-period model, which
+        Gurobi itself solved at a tight tolerance, shows that 537.1 is the
+        least that period can cost. A feasible plan cannot be 18\% below
+        that minimum.
+\end{itemize}
+
+\subsubsection*{The mechanism}
+
+Demand in the model is in million tonnes. A feasibility tolerance of
+$10^{-2}$ therefore lets each demand constraint fall short by ten thousand
+tonnes, and Gurobi reports violations of up to 0.087 in the model's units. About
+half of the roughly 1{,}250 demand constraints per period are for less than
+0.02 million tonnes, so many can be left wholly or largely unserved. Unserved
+demand costs nothing, which lowers the objective.
+
+\subsubsection*{An independent lower bound}
+
+Each of the nine scenarios was solved on its own with HiGHS, with all
+constraints active (Table~\ref{tab:ws}). The mean of these optima, 2864.87,
+is the cost if the future were known in advance. No plan that serves the
+demand can have an expected cost below it, and the mean--CVaR objective of
+the stochastic programme is never below the expected cost.
+
+\begin{table}[H]
+\centering
+\caption{Single-scenario optima with HiGHS (diagnostic runs). The first
+letter of a scenario is the fossil price, the second the electricity price:
+O optimistic, B base, P pessimistic.}
+\label{tab:ws}
+\begin{tabular}{@{}lrrr@{}}
+\toprule
+Scenario & Objective & First stage & Second stage \\
+\midrule
+OO & 2816.25 & 1147.19 & 1669.06 \\
+OB & 2825.12 & 1147.26 & 1677.86 \\
+OP & 2830.30 & 1147.36 & 1682.94 \\
+BO & 2856.72 & 1159.52 & 1697.21 \\
+BB & 2879.71 & 1158.56 & 1721.15 \\
+BP & 2895.53 & 1158.58 & 1736.95 \\
+PO & 2868.55 & 1164.71 & 1703.83 \\
+PB & 2893.51 & 1163.83 & 1729.68 \\
+PP & 2918.09 & 1162.76 & 1755.32 \\
+\midrule
+Mean & 2864.87 & & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{The stochastic-programme objective against the lower bound.}
+\begin{tabular}{@{}lrr@{}}
+\toprule
+ & Objective & Relative to bound \\
+\midrule
+Lower bound (mean of single-scenario optima) & 2864.87 & -- \\
+HiGHS stochastic programme & 2883.51 & $+0.65$\% \\
+Gurobi stochastic programme (paper) & 2444.53 & $-14.67$\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For comparison, the first-stage cost stored in the Gurobi stochastic solution
+is 954.66, against 1147--1165 in every single-scenario optimum.
+
+\subsubsection*{Conclusion}
+
+The HiGHS result is consistent with the bound; the published value is not.
+The published stochastic-programme objective belongs to a solution that
+leaves 8--12\% of demand unserved. This follows from the authors' own files
+and does not depend on HiGHS. An earlier test on the EV model pointed the
+same way: allowing variables to fall $10^{-4}$ below zero lowers its
+objective by 3.1\%, and $10^{-3}$ lowers it by 24.8\%.
+
+\subsection{The value of the stochastic solution}
+\label{sec:vss}
+
+The value of the stochastic solution (VSS) is the EEV objective minus the SP
+objective: what is gained by planning with scenarios instead of expected
+values.
+
+\begin{table}[H]
+\centering
+\caption{Value of the stochastic solution.}
+\begin{tabularx}{\textwidth}{@{}Yrrrr@{}}
+\toprule
+Source & EEV & SP & VSS & VSS (billion euro) \\
+\midrule
+Paper (Gurobi, tolerance $10^{-2}$) & 2836.22 & 2444.53 & 13.81\% & 39.1 \\
+HiGHS, code as published & 2887.63 & 2883.51 & 0.14\% & 0.41 \\
+HiGHS, EV argument corrected & 2883.52 & 2883.51 & 0.0002\% & 0.001 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\begin{itemize}
+  \item With strict feasibility the VSS is at most 0.14\%. In the corrected
+        case it is smaller than the solver's optimality gap (0.008\%), so it
+        cannot be told apart from zero.
+  \item The published 13.8\% compares an EEV solution that serves about 99\%
+        of demand with an SP solution that serves 88--92\%. Most of the gap
+        is unserved demand, not better planning.
+  \item Mean emissions are the same in the HiGHS EEV (corrected) and SP
+        solutions in every period. The paper reports 2.2 Mt lower emissions
+        for SP.
+\end{itemize}
+
+\textbf{How firm this is.} The measurements on the Gurobi solutions are
+exact readings of the authors' files. The HiGHS results come from one solver
+at default strictness. A Gurobi run of the stochastic programme at a tight
+tolerance ($10^{-6}$) would settle the matter in a few minutes, and the
+authors are best placed to make it. Until then this should be described as a
+reproducibility finding to be confirmed, not as an established error.
+
+\subsection{The misplaced argument in the EV stage}
+\label{sec:evarg}
+
+In \texttt{construct\_and\_solve\_EEV()} in \texttt{Main.py}, the original
+call
+
+\begin{lstlisting}[language=Python]
+construct_and_solve_model(base_data, model_instance_init, "EV",
+                          risk_info, emission_cap_constraint,
+                          FeasTol=10**-3)
+\end{lstlisting}
+
+passes \texttt{emission\_cap\_constraint} as the fifth positional argument,
+which is \texttt{single\_time\_period}. Its value \texttt{False} is not
+\texttt{None}, so \texttt{Model.py} skips the block that adds the initial
+fuel-share, mode-shift, fleet-renewal and technology-diffusion constraints.
+
+\begin{table}[H]
+\centering
+\caption{Effect of the argument (workstation Runs 2 and 3).}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+ & EV rows & EV columns & EV objective & EEV objective \\
+\midrule
+As published & 15{,}763 & 138{,}925 & 2843.61 & 2887.63 \\
+Corrected & 16{,}107 & 139{,}184 & 2879.71 & 2883.52 \\
+\midrule
+Change & $+344$ & $+259$ & $+1.27$\% & $-0.14$\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The corrected EV model equals the deterministic case of Run 1 in size and
+objective. The EEV improves slightly because the first-stage plan now comes
+from a model with the same constraints as the one that evaluates it. Whether
+the original call is intended is not known. Its effect on the published
+figures is small.
+
+\subsection{Model results}
+
+\begin{table}[H]
+\centering
+\caption{Mean emissions in Mt CO$_2$ equivalent, with the standard deviation
+across scenarios in brackets.}
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+Year & Deterministic & EEV as published & EEV corrected & SP \\
+\midrule
+2023 & 6.8 & 6.9 & 6.8 & 6.8 \\
+2028 & 7.4 & 7.7 & 7.4 & 7.4 \\
+2034 & 4.7 & 6.2 (0.83) & 5.3 (1.3) & 5.3 (1.3) \\
+2040 & 3.1 & 3.5 (1.6) & 3.4 (1.6) & 3.4 (1.6) \\
+2050 & 0.26 & 1.4 (1.6) & 1.4 (1.6) & 1.4 (1.6) \\
+\midrule
+2050 as share of 2023 & 3.8\% & 20\% & 20\% & 20\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Cost components of the stochastic programme (Run 4), in billion
+euro: mean across the nine scenarios, standard deviation in brackets where
+non-zero.}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Component & 2023 & 2028 & 2034 & 2040 & 2050 \\
+\midrule
+LCOT & 5.36 & 5.99 & 6.68 (0.44) & 7.03 (0.47) & 7.75 (0.32) \\
+LCOT (empty trips) & 0.99 & 1.08 & 1.23 (0.12) & 1.31 (0.13) & 1.47 (0.09) \\
+Emission & 0.46 & 1.05 & 0.90 (0.21) & 0.58 (0.23) & 0.27 (0.27) \\
+Emission (empty trips) & 0.11 & 0.26 & 0.22 (0.07) & 0.15 (0.11) &
+0.03 (0.08) \\
+Time value & 1.89 & 2.18 & 2.39 & 2.53 & 2.90 \\
+Transfer & 2.74 & 3.19 & 3.42 & 3.26 (0.03) & 3.59 (0.02) \\
+Rail track & 0.11 & 0.00 & 0.00 & 0.00 & 0.00 \\
+Terminal & 0.03 & 0.02 & 0.00 & 0.01 & 0.00 \\
+Charging & 0.00 & 0.01 & 0.05 (0.02) & 0.10 & 0.07 \\
+H$_2$ filling & 0.00 & 0.00 & 0.00 & 0.00 & 0.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Cost components of the deterministic case (Run 1), in billion
+euro.}
+\begin{tabular}{@{}lrrrrr@{}}
+\toprule
+Component & 2023 & 2028 & 2034 & 2040 & 2050 \\
+\midrule
+LCOT & 5.353 & 5.904 & 6.961 & 7.344 & 7.985 \\
+LCOT (empty trips) & 0.992 & 1.067 & 1.241 & 1.291 & 1.505 \\
+Emission & 0.461 & 1.045 & 0.741 & 0.385 & 0.062 \\
+Emission (empty trips) & 0.110 & 0.256 & 0.239 & 0.215 & 0.000 \\
+Time value & 1.895 & 2.180 & 2.389 & 2.528 & 2.894 \\
+Transfer & 2.747 & 3.185 & 3.393 & 3.246 & 3.583 \\
+Rail track & 0.111 & 0.000 & 0.000 & 0.000 & 0.000 \\
+Terminal & 0.027 & 0.022 & 0.000 & 0.010 & 0.000 \\
+Charging & 0.000 & 0.008 & 0.065 & 0.104 & 0.070 \\
+H$_2$ filling & 0.000 & 0.000 & 0.000 & 0.001 & 0.001 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Rail electrification and the CO$_2$ penalty are zero throughout and are
+omitted. \texttt{VisualizeResults.py} converts the model's values at a fixed
+10 NOK per euro and labels them ``Billion EURO''. The six transport rows are
+annual costs for the period's year and the infrastructure rows are investment
+costs. The values are not discounted; the discount factors of the five
+periods are 1.00, 0.83, 0.66, 0.53 and 0.36. The first two periods are
+identical across scenarios because they are first-stage periods.
+
+\section{Achievement}
+
+\begin{enumerate}
+  \item \textbf{Independence from a commercial licence.} STraM runs on a
+        fully open stack (Python, Pyomo, HiGHS) with changes to one function
+        and one name.
+  \item \textbf{A documented, repeatable installation} for Windows that
+        works with current package versions.
+  \item \textbf{Every model in the paper's base case solved to optimality},
+        from 16 thousand to 4.48 million constraints, including the full
+        stochastic programme in about 14 minutes of wall time.
+  \item \textbf{A reproducibility finding on the published results}: the
+        stochastic-programme objective and the value of the stochastic
+        solution depend on a loose feasibility tolerance, shown from the
+        authors' own solution files and an independent bound.
+  \item \textbf{A minor code finding}: the misplaced argument in the EV
+        stage, with its effect measured.
+  \item \textbf{Measured costs per model evaluation}: 20--27 seconds for a
+        one-scenario model, 12 minutes for nine scenarios with the first
+        stage fixed, and 14 minutes for the full stochastic programme.
+\end{enumerate}
+
+\newpage
+
+
+\section{Feasibility of using STraM for the surrogate work}
+\label{sec:surrogate}
+
+\subsection{What the surrogate work needs from STraM}
+
+\begin{longtable}{@{}L{4.6cm} L{2.2cm} L{7.4cm}@{}}
+\toprule
+Requirement & Status & Evidence \\
+\midrule
+\endhead
+Run and modify STraM without licence constraints (open code is a planned
+contribution). & Confirmed &
+All runs in this report used open tools only. \\
+\addlinespace
+A two-stage structure with first-stage decisions, scenarios and a
+mean--CVaR objective (WP1). & Confirmed &
+Present in \texttt{Model.py} and exercised in Runs 2--4: first-stage and
+second-stage cost variables per scenario, non-anticipativity constraints, and
+the CVaR terms. \\
+\addlinespace
+Evaluate the recourse cost $Q(x,\xi)$ for a fixed first-stage decision $x$
+(training data for WP2). & Confirmed &
+The EEV stage does exactly this, using STraM's own routine
+\texttt{fix\_variables\_first\_stage()}. Run twice at full size. \\
+\addlinespace
+Generate many such evaluations in reasonable time. & Confirmed for the
+current model size &
+One single-scenario solve takes 20--27 seconds: roughly 140 per hour run one
+at a time on the workstation. \\
+\addlinespace
+Solve the full nine-scenario stochastic programme. & Confirmed &
+Run 4: optimal at the root node, 607 seconds of solver time. \\
+\addlinespace
+A reference solution to compare surrogate-based solutions against. &
+Confirmed, with a condition &
+The HiGHS solutions are consistent with an independent bound. The published
+Gurobi values should not be used as the reference. \\
+\addlinespace
+Embed a surrogate as constraints in the same model (WP2, route i). &
+Not tested &
+STraM is a Pyomo model and HiGHS solves mixed-integer programmes, so the
+route is open in principle. Model size and solve time with an embedded
+network are unknown. \\
+\addlinespace
+Decomposition to go beyond the memory limit at 25 scenarios (WP1). &
+Not tested &
+Runs with 16 or 25 scenarios were not attempted. \\
+\addlinespace
+Disruption scenarios and a response model as recourse (WP1, WP3). &
+Not tested &
+STraM's uncertainty is long-term cost. Disruptions require new scenario data
+and new recourse constraints. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Conclusion on feasibility}
+
+On this evidence, working with STraM as the base model for the surrogate
+research is achievable. Everything that had to work before the research
+could start now works: the model installs and runs on open tools, all of its
+model types solve at full size on a workstation, a fixed first-stage decision
+can be evaluated across scenarios, and each evaluation is cheap enough to
+generate training data in volume.
+
+What is confirmed is the foundation, not the surrogate method. Training a
+surrogate, embedding it, and keeping solution quality (research question
+RQ-B) remain open research and are not demonstrated here.
+
+\subsection{Points to carry into the research}
+
+\begin{itemize}
+  \item \textbf{Solver tolerance must be controlled and reported.} In
+        STraM's units a tolerance of $10^{-2}$ changes the answer by 18\%.
+        Surrogate training labels and benchmark solutions should come from
+        one solver at one tight tolerance, and demand served should be
+        checked on every solution.
+  \item \textbf{STraM's value of the stochastic solution is close to zero
+        for cost uncertainty.} WP1 uses the VSS as its benchmark. That
+        remains a sound measure, but the plan should not cite STraM's 13.8\%
+        as evidence that stochastic modelling pays off. With disruptions as
+        the uncertainty the VSS may be very different, and establishing it is
+        part of the research.
+  \item \textbf{Scaling of the model's units deserves attention} when the
+        model is extended: demands of a few thousand tonnes sit beside totals
+        of two hundred million.
+  \item \textbf{Measure before assuming scale.} HiGHS solved the stochastic
+        programme at the root node. Its behaviour with more scenarios, with
+        disruption recourse, or with embedded surrogates is unknown.
+\end{itemize}
+
+\section{Limitations}
+
+\begin{itemize}
+  \item No Gurobi run was made. The findings on the published values rest on
+        the authors' files and on HiGHS.
+  \item The demand served by the workstation's own stochastic solution was
+        not measured directly. It is supported by the lower bound, by the
+        agreement of its first-stage costs with the single-scenario optima,
+        and by the 100\% measured in a diagnostic HiGHS solve of the
+        deterministic model.
+  \item HiGHS was given STraM's loose value as its linear-programming
+        tolerance while its integer feasibility tolerance stayed at the tight
+        default. It did not exploit the loose value, but the settings should
+        be made explicitly tight.
+  \item The emission cap was switched off in all runs.
+  \item Solve-time comparisons are across different hardware, and peak
+        memory was not recorded.
+  \item The diagnostic runs used newer package versions than the
+        workstation. Where the same model was solved on both, the objectives
+        agreed to all printed digits.
+\end{itemize}
+
+\section{Next steps}
+\label{sec:next}
+
+\begin{enumerate}
+  \item \textbf{Make the tolerances explicit.} In \texttt{solve\_model()},
+        set both \texttt{primal\_feasibility\_tolerance} and
+        \texttt{mip\_feasibility\_tolerance} to $10^{-6}$ regardless of the
+        value passed in, and rerun the stochastic programme to confirm the
+        objective does not move.
+  \item \textbf{Add a demand-served check} that prints, for each period, the
+        total path flow against total demand after every solve.
+  \item \textbf{Write to the STraM authors} with Table~\ref{tab:served}, the
+        lower bound and the argument at line 200, and ask for a Gurobi run
+        at a tight tolerance.
+  \item \textbf{Carbon price sensitivity} on the deterministic case with
+        \texttt{co2\_fee} set to \texttt{"base"}, \texttt{"intermediate"} and
+        \texttt{"high"}.
+  \item \textbf{A first recourse data set}: fix several different
+        first-stage decisions, evaluate each across the nine scenarios, and
+        store first-stage decision, scenario and second-stage cost.
+  \item \textbf{A first surrogate test} on that data set, outside the
+        optimisation model.
+\end{enumerate}
+
+
+\section*{References}
+
+\begin{itemize}[label={}, leftmargin=1.5em, itemindent=-1.5em, itemsep=6pt]
+\raggedright
+  \item S.J.S. Bakker, J. Martin, E.R. van Beesten, I.S. Brynildsen,
+        A. Sandvig, M. Siqveland and A. Golab (2025). STraM: A strategic
+        network design model for national freight transport decarbonization.
+        \emph{Transportation Research Part E}, 197, 104076.
+        \url{https://doi.org/10.1016/j.tre.2025.104076}
+  \item STraM code and data (MIT licence).
+        \url{https://github.com/ntnuiotenergy/STraM}
+  \item A.A. Ilugbusi. \emph{Surrogate-Embedded Stochastic Optimisation for
+        Resilient Multimodal Transport Networks}. Research plan.
+\end{itemize}
+
+
+
+\end{document}
